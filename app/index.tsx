@@ -2,10 +2,9 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import * as DocumentPicker from 'expo-document-picker';
-import { Alert } from 'react-native';
 
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -24,7 +23,7 @@ export default function FileBrowserScreen() {
 
   const fetchFiles = async () => {
     try {
-      // 1. Дістаємо токен з пам'яті
+      // Дістаємо токен з пам'яті
       const token = await AsyncStorage.getItem('userToken');
       
       // Якщо токена немає - відправляємо на логін
@@ -33,11 +32,11 @@ export default function FileBrowserScreen() {
         return;
       }
 
-      // 2. Робимо запит до захищеного маршруту
+      // Робимо запит до захищеного маршруту
       const response = await fetch(`${API_URL}/files`, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${token}`, // <-- ОСЬ ТАК ПЕРЕДАЄТЬСЯ ТОКЕН
+          'Authorization': `Bearer ${token}`, // ТУТ ПЕРЕДАЄТЬСЯ ТОКЕН
           'Content-Type': 'application/json',
         },
       });
@@ -63,37 +62,42 @@ export default function FileBrowserScreen() {
     }
   };
 
-  // --- ФУНКЦІЯ ЗАВАНТАЖЕННЯ ---
+  // ФУНКЦІЯ ВИВАНТАЖЕННЯ (UPLOAD) 
   const handleUpload = async () => {
     try {
-      // 1. Відкриваємо вікно вибору файлу на телефоні
       const result = await DocumentPicker.getDocumentAsync({});
-      if (result.canceled) return; // Користувач передумав
+      if (result.canceled) return; 
 
       const file = result.assets[0];
       const token = await AsyncStorage.getItem('userToken');
 
-      // 2. Пакуємо файл у формат FormData (спеціально для файлів)
       const formData = new FormData();
-      formData.append('document', {
-        uri: file.uri,
-        name: file.name,
-        type: file.mimeType || 'application/octet-stream',
-      } as any); // "as any" потрібно для TypeScript у React Native
 
-      // 3. Відправляємо на сервер
+      // ЛОГІКА ДЛЯ БРАУЗЕРА ТА ТЕЛЕФОНІВ
+      if (Platform.OS === 'web' && file.file) {
+        // "&& file.file", щоб TS був впевнений, що він існує
+        formData.append('document', file.file as File);
+      } else {
+        // На телефоні передаємо спеціальний об'єкт із посиланням (uri)
+        formData.append('document', {
+          uri: file.uri,
+          name: file.name,
+          type: file.mimeType || 'application/octet-stream',
+        } as any); 
+      }
+
+      // Відправляємо на сервер
       const response = await fetch(`${API_URL}/upload`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
-          // УВАГА: Content-Type тут писати НЕ ТРЕБА, fetch сам його згенерує для FormData
         },
         body: formData,
       });
 
       if (response.ok) {
         Alert.alert('Успіх!', 'Файл завантажено');
-        fetchFiles(); // Оновлюємо список файлів на екрані
+        fetchFiles(); // Оновлюємо список
       } else {
         const data = await response.json();
         Alert.alert('Помилка', data.error);
@@ -104,74 +108,103 @@ export default function FileBrowserScreen() {
     }
   };
 
-  // --- ФУНКЦІЯ ВИДАЛЕННЯ ---
+  // ФУНКЦІЯ ВИДАЛЕННЯ 
   const handleDelete = async (fileName: string) => {
-    Alert.alert(
-      "Підтвердження", 
-      `Видалити файл ${fileName}?`,
-      [
-        { text: "Скасувати", style: "cancel" },
-        { 
-          text: "Видалити", 
-          style: "destructive",
-          onPress: async () => {
-            const token = await AsyncStorage.getItem('userToken');
-            try {
-              const response = await fetch(`${API_URL}/files/${encodeURIComponent(fileName)}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
-              });
+    
+    // Сама логіка видалення (універсальна для всіх платформ)
+    const executeDelete = async () => {
+      const token = await AsyncStorage.getItem('userToken');
+      try {
+        const response = await fetch(`${API_URL}/files/${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
 
-              if (response.ok) {
-                fetchFiles(); // Оновлюємо список
-              } else {
-                const data = await response.json();
-                Alert.alert('Помилка', data.error); // Якщо user спробує видалити, сервер видасть помилку
-              }
-            } catch (error) {
-              console.error('Помилка видалення:', error);
-            }
-          }
+        if (response.ok) {
+          fetchFiles(); // Оновлюємо список
+        } else {
+          const data = await response.json();
+          Alert.alert('Помилка', data.error || 'Не вдалося видалити файл');
         }
-      ]
-    );
+      } catch (error) {
+        console.error('Помилка видалення:', error);
+      }
+    };
+
+    //  ЛОГІКА ДІАЛОГОВОГО ВІКНА ДЛЯ БРАУЗЕРА (ПК)
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm(`Видалити файл ${fileName}?`);
+      if (confirmed) {
+        executeDelete();
+      }
+    } 
+    // ЛОГІКА ДІАЛОГОВОГО ВІКНА ДЛЯ ТЕЛЕФОНІВ
+    else {
+      Alert.alert(
+        "Підтвердження", 
+        `Видалити файл ${fileName}?`,
+        [
+          { text: "Скасувати", style: "cancel" },
+          { text: "Видалити", style: "destructive", onPress: executeDelete }
+        ]
+      );
+    }
   };
 
-  // --- ФУНКЦІЯ ЗАВАНТАЖЕННЯ З СЕРВЕРА НА ТЕЛЕФОН ---
+  // ФУНКЦІЯ ЗАВАНТАЖЕННЯ З СЕРВЕРА НА ТЕЛЕФОН / ПК 
   const handleDownloadFromServer = async (fileName: string) => {
     try {
       Alert.alert("Завантаження...", "Будь ласка, зачекайте.");
       
       const token = await AsyncStorage.getItem('userToken');
-      // Обов'язково використовуємо encodeURIComponent для файлів з пробілами!
       const downloadUrl = `${API_URL}/download/${encodeURIComponent(fileName)}`;
-      
-      // Створюємо тимчасовий шлях у кеші додатку на телефоні
-      const localUri = `${FileSystem.documentDirectory}${fileName}`;
 
-      // Починаємо завантаження
-      const downloadResumable = FileSystem.createDownloadResumable(
-        downloadUrl,
-        localUri,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}` // Передаємо перепустку
+      // ЛОГІКА ДЛЯ БРАУЗЕРА (ПК)
+      if (Platform.OS === 'web') {
+        const response = await fetch(downloadUrl, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!response.ok) throw new Error('Помилка сервера при віддачі файлу');
+
+        // Перетворюємо відповідь на файл (Blob)
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        
+        // Створюємо невидиме посилання 
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        
+        // Прибираємо за собою
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        
+      } 
+      // ЛОГІКА ДЛЯ МОБІЛЬНИХ (Android / iOS)
+      else {
+        const localUri = `${FileSystem.documentDirectory}${fileName}`;
+
+        const downloadResumable = FileSystem.createDownloadResumable(
+          downloadUrl,
+          localUri,
+          { headers: { 'Authorization': `Bearer ${token}` } }
+        );
+
+        const result = await downloadResumable.downloadAsync();
+
+        if (result && result.status === 200) {
+          const isAvailable = await Sharing.isAvailableAsync();
+          if (isAvailable) {
+            await Sharing.shareAsync(result.uri);
+          } else {
+            Alert.alert('Готово', 'Файл завантажено в кеш');
           }
-        }
-      );
-
-      const result = await downloadResumable.downloadAsync();
-
-      if (result && result.status === 200) {
-        // Якщо скачалося успішно, відкриваємо меню "Поділитися / Зберегти"
-        const isAvailable = await Sharing.isAvailableAsync();
-        if (isAvailable) {
-          await Sharing.shareAsync(result.uri);
         } else {
-          Alert.alert('Готово', 'Файл завантажено в кеш');
+          Alert.alert('Помилка', 'Не вдалося завантажити файл з сервера');
         }
-      } else {
-        Alert.alert('Помилка', 'Не вдалося завантажити файл з сервера');
       }
     } catch (error) {
       console.error('Помилка завантаження:', error);
@@ -192,7 +225,7 @@ export default function FileBrowserScreen() {
       style={styles.fileItem}
       // Якщо це файл (не папка), запускаємо завантаження
       onPress={() => !item.isDirectory && handleDownloadFromServer(item.name)}
-      disabled={item.isDirectory} // поки не робимо перехід по папках
+      disabled={item.isDirectory} 
     >
       <MaterialCommunityIcons 
         name={item.isDirectory ? "folder" : "file-document-outline"} 
@@ -243,7 +276,7 @@ export default function FileBrowserScreen() {
         />
       )}
 
-      {/* НОВЕ МІСЦЕ ДЛЯ КНОПКИ ЗАВАНТАЖЕННЯ (Внизу екрана) */}
+      {/* МІСЦЕ ДЛЯ КНОПКИ ЗАВАНТАЖЕННЯ (Внизу екрана) */}
       <TouchableOpacity style={styles.uploadButton} onPress={handleUpload}>
         <MaterialCommunityIcons name="cloud-upload" size={24} color="#fff" />
         <Text style={styles.uploadButtonText}>Завантажити файл</Text>
@@ -280,7 +313,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 10,
-    marginBottom: 30, // <--- Додали відступ знизу
+    marginBottom: 30,
     elevation: 3,
   },
   uploadButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginLeft: 10 },
